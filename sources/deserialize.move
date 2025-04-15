@@ -175,12 +175,14 @@ public fun parse_array(
     let bytes_len = bytes.length();
     let mut next_idx = start_idx;
     
+    let mut needs_next_el = false;
+    
     assert!(bytes[next_idx] == LBRACKET_UTF8, EInvalidJSON);
     next_idx = next_idx + 1;
 
     while (true) {
         assert!(next_idx < bytes_len, EInvalidJSON);
-        if (bytes[next_idx] == RBRACKET_UTF8) {
+        if (bytes[next_idx] == RBRACKET_UTF8 && !needs_next_el) {
             next_idx = next_idx + 1;
             break
         };
@@ -191,6 +193,7 @@ public fun parse_array(
 
         assert!(next_idx < bytes_len, EInvalidJSON);
         if (bytes[next_idx] == COMMA_UTF8) {
+            needs_next_el = true;
             next_idx = next_idx + 1;
         } else if (bytes[next_idx] == RBRACKET_UTF8) {
             next_idx = next_idx + 1;
@@ -210,6 +213,8 @@ public fun parse_object(
     parsed: &mut ParsedJSON, bytes: &vector<u8>, start_idx: u64
 ): (JSONValue, u64) {
     let mut values = vec_map::empty<String, JSONValue>();
+    
+    let mut needs_next_el = false;
 
     let bytes_len = bytes.length();
     let mut next_idx = start_idx + 1;
@@ -229,6 +234,7 @@ public fun parse_object(
                 
                 assert!(next_idx < bytes_len, EInvalidJSON);
                 if (bytes[next_idx] == COMMA_UTF8) {
+                    needs_next_el = true;
                     next_idx = next_idx + 1;
                 } else if (bytes[next_idx] == RCURLY_UTF8) {
                     next_idx = next_idx + 1;
@@ -240,6 +246,7 @@ public fun parse_object(
                 assert!(false, EInvalidJSON);
             }
         } else if (bytes[next_idx] == RCURLY_UTF8) {
+            assert!(!needs_next_el, EInvalidJSON);
             next_idx = next_idx + 1;
             break
         } else {
@@ -306,4 +313,53 @@ fun test_parse_nested() {
     assert!(empty_arr.length() == 0);
     let empty_obj = array[5].unwrap_object(&parsed);
     assert!(empty_obj.size() == 0);
+}
+
+#[test]
+fun test_multiple_attrs() {
+    let json_string = string::utf8(b"{\"Hello\":\"World\",\"foo\":\"bar\"}");
+
+    let parsed = deserialize(&json_string);
+    let root_obj = &parsed.get_root().unwrap_object(&parsed);
+    assert!(root_obj.size() == 2);
+}
+
+#[test]
+#[expected_failure]
+fun test_comma_end_of_object() {
+    let json_string = string::utf8(b"{\"Hello\":\"World\",\"foo\":\"bar\",}");
+
+    deserialize(&json_string);
+}
+
+#[test]
+#[expected_failure]
+fun test_comma_end_of_array() {
+    let json_string = string::utf8(b"[true,false,]");
+
+    deserialize(&json_string);
+}
+
+#[test]
+#[expected_failure]
+fun test_no_rb_w_comma() {
+    let json_string = string::utf8(b"[true,false,");
+
+    deserialize(&json_string);
+}
+
+#[test]
+#[expected_failure]
+fun test_no_rb_wo_comma() {
+    let json_string = string::utf8(b"[true,false");
+
+    deserialize(&json_string);
+}
+
+#[test]
+#[expected_failure]
+fun test_cannot_have_excess() {
+    let json_string = string::utf8(b"{}adsd");
+
+    deserialize(&json_string);
 }

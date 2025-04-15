@@ -3,7 +3,7 @@ module move_json::json;
 
 use std::string::{String, Self};
 
-use sui::vec_map::VecMap;
+use sui::vec_map::{VecMap, Self};
 
 // For Move coding conventions, see
 // https://docs.sui.io/concepts/sui-move-concepts/conventions
@@ -76,10 +76,10 @@ public fun array(p: &mut ParsedJSON, arr: vector<JSONValue>): JSONValue {
     JSONValue::Array(ref)
 }
 
-public fun object(p: &mut ParsedJSON, arr: VecMap<String, JSONValue>): JSONValue {
+public fun object(p: &mut ParsedJSON, o: VecMap<String, JSONValue>): JSONValue {
     let object_idx = p.objects.length();
     let ref = ObjectRef { object_idx };
-    p.objects.push_back(arr);
+    p.objects.push_back(o);
     
     JSONValue::Object(ref)
 }
@@ -147,6 +147,8 @@ fun escape_string_into_bytes(s: &String): vector<u8> {
     let original_len = original.length();
 
     let mut escaped = vector::empty<u8>();
+    escaped.push_back(QUOTATION_UTF8);
+
     let mut i = 0;
     while (i < original_len) {
         let char = original[i];
@@ -159,6 +161,8 @@ fun escape_string_into_bytes(s: &String): vector<u8> {
 
         i = i + 1;                
     };
+
+    escaped.push_back(QUOTATION_UTF8);
     escaped
 }
 
@@ -278,7 +282,7 @@ fun test_serialize_string() {
     let p = new_parsed();
     let s = p.serialize_bytes(&string(string::utf8(b"Hello World")));
 
-    assert!(s == b"Hello World");
+    assert!(s == b"\"Hello World\"");
 }
 
 #[test]
@@ -286,7 +290,7 @@ fun test_serialize_string_empty() {
     let p = new_parsed();
     let s = p.serialize_bytes(&string(string::utf8(b"")));
 
-    assert!(s == b"");
+    assert!(s == b"\"\"");
 }
 
 #[test]
@@ -294,7 +298,7 @@ fun test_serialize_string_escaped_quotes() {
     let p = new_parsed();
     let s = p.serialize_bytes(&string(string::utf8(b"hello\"a")));
 
-    assert!(s == b"hello\\\"a");
+    assert!(s == b"\"hello\\\"a\"");
 }
 
 #[test]
@@ -302,7 +306,7 @@ fun test_serialize_string_escaped_backslash() {
     let p = new_parsed();
     let s = p.serialize_bytes(&string(string::utf8(b"hello\\fjasj")));
 
-    assert!(s == b"hello\\\\fjasj");
+    assert!(s == b"\"hello\\\\fjasj\"");
 }
 
 #[test]
@@ -312,4 +316,64 @@ fun test_serialize_empty_array() {
     let s = p.serialize_bytes(&arr);
 
     assert!(s == b"[]");
+}
+
+#[test]
+fun test_serialize_singleton_array() {
+    let mut p = new_parsed();
+    let mut v = vector::empty();
+    v.push_back(boolean(true));
+    let arr = p.array(v);
+    let s = p.serialize_bytes(&arr);
+
+    assert!(s == b"[true]");
+}
+
+#[test]
+fun test_serialize_nested_array() {
+    let mut p = new_parsed();
+    let o = p.object(vec_map::empty());
+
+    let mut vec = vector::empty();
+    vec.push_back(o);
+    let arr = p.array(vec);
+    
+    let s = p.serialize_bytes(&arr);
+
+    assert!(s == b"[{}]");
+}
+
+#[test]
+fun test_serialize_nested_array_1() {
+    let mut p = new_parsed();
+    let mut map = vec_map::empty();
+    map.insert(string::utf8(b"hello"), string(string::utf8(b"world")));
+    let o = p.object(map);
+
+    let mut vec = vector::empty();
+    vec.push_back(o);
+    let arr = p.array(vec);
+    
+    let s = p.serialize_bytes(&arr);
+
+    assert!(s == b"[{\"hello\":\"world\"}]");
+}
+
+#[test]
+fun test_serialize_multiple_items_array() {
+    let mut p = new_parsed();
+    let o = p.object(vec_map::empty());
+    let a = p.array(vector::empty());
+
+    let mut vec = vector::empty();
+    vec.push_back(o);
+    vec.push_back(boolean(true));
+    vec.push_back(boolean(false));
+    vec.push_back(a);
+
+    let arr = p.array(vec);
+    
+    let s = p.serialize_bytes(&arr);
+
+    assert!(s == b"[{},true,false,[]]");
 }
