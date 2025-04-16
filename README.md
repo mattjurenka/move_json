@@ -1,7 +1,7 @@
 # Move JSON
 Written by Matthew Jurenka of [Jurenka Software](https://jurenka.software/)
 
-This library facilitates the parsing and serializing of JSON on-chain. Move does not currently support recursive data types, so to handle nested objects and arrays we have to store them in another struct that is re-used per serialization and deserialization. `JSONValue::Array` and `::Object` are simple structs that just store which index the underlying data is within the `JSONObjectStore` instance.
+This library facilitates the parsing and serializing of JSON on-chain. Move does not currently support recursive data types, so to handle nested objects and arrays we have to store them in another struct that is re-used per serialization and deserialization. `JSONValue::Array` and `::Object` hold Refs which are simple structs that just store which index the underlying data is within the `JSONObjectStore` instance.
 
 ```
 public enum JSONValue has copy, drop, store {
@@ -125,4 +125,4 @@ Test result: OK. Total tests: 27; passed: 27; failed: 0
 
 #### Disclaimer:
 
-This code is unaudited, and we are not responsible for any loss incurred by use by any bugs. This library is in development and the interface is subject to change.
+This code is unaudited, and we are not responsible for any loss incurred by any bugs. This library is in development and the interface is subject to change.
