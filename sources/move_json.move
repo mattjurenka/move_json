@@ -5,17 +5,12 @@ use std::string::{String, Self};
 
 use sui::vec_map::{VecMap, Self};
 
-// For Move coding conventions, see
-// https://docs.sui.io/concepts/sui-move-concepts/conventions
 
-// Should we use table or table_vec
 // Is this a zero copy library? how performant
-// Does && short circuit
 
-public struct ParsedJSON has copy, drop, store {
+public struct JSONObjectStore has copy, drop, store {
     objects: vector<VecMap<String, JSONValue>>,
-    arrays: vector<vector<JSONValue>>,
-    root: JSONValue
+    arrays: vector<vector<JSONValue>>
 }
 
 public enum JSONValue has copy, drop, store {
@@ -35,22 +30,20 @@ public struct ArrayRef has copy, drop, store {
     array_idx: u64,
 }
 
-public fun new_parsed(): ParsedJSON {
-    ParsedJSON {
+public fun borrow_object_data(ref: &ObjectRef, store: &JSONObjectStore): &VecMap<String, JSONValue> {
+    &store.objects[ref.object_idx]
+}
+
+public fun borrow_array_data(ref: &ArrayRef, store: &JSONObjectStore): &vector<JSONValue> {
+    &store.arrays[ref.array_idx]
+}
+
+public fun new_object_store(): JSONObjectStore {
+    JSONObjectStore {
         objects: vector::empty(),
-        arrays: vector::empty(),
-        root: JSONValue::Null,
+        arrays: vector::empty()
     }
 }
-
-public fun set_root(p: &mut ParsedJSON, v: JSONValue) {
-    p.root = v;
-}
-
-public fun get_root(p: &ParsedJSON): JSONValue {
-    p.root
-}
-
 
 public fun null(): JSONValue {
     JSONValue::Null
@@ -68,7 +61,7 @@ public fun number(n: u64): JSONValue {
     JSONValue::Number(n)
 }
 
-public fun array(p: &mut ParsedJSON, arr: vector<JSONValue>): JSONValue {
+public fun array(p: &mut JSONObjectStore, arr: vector<JSONValue>): JSONValue {
     let array_idx = p.arrays.length();
     let ref = ArrayRef { array_idx };
     p.arrays.push_back(arr);
@@ -76,12 +69,66 @@ public fun array(p: &mut ParsedJSON, arr: vector<JSONValue>): JSONValue {
     JSONValue::Array(ref)
 }
 
-public fun object(p: &mut ParsedJSON, o: VecMap<String, JSONValue>): JSONValue {
+
+public fun object(p: &mut JSONObjectStore, o: VecMap<String, JSONValue>): JSONValue {
     let object_idx = p.objects.length();
     let ref = ObjectRef { object_idx };
     p.objects.push_back(o);
     
     JSONValue::Object(ref)
+}
+
+public enum JSONIndex has copy, drop, store {
+    Array(u64),
+    Object(String)    
+}
+
+public fun array_index(idx: u64): JSONIndex {
+    JSONIndex::Array(idx)
+}
+
+public fun as_array_idx(idx: JSONIndex): u64 {
+    match (idx) {
+        JSONIndex::Array(n) => n,
+        _ => abort EInvalidPath
+    }
+}
+
+public fun obj_index(key: String): JSONIndex {
+    JSONIndex::Object(key)
+}
+
+public fun as_object_idx(idx: JSONIndex): String {
+    match (idx) {
+        JSONIndex::Object(s) => s,
+        _ => abort EInvalidPath
+    }
+}
+
+#[error]
+const EInvalidPath: vector<u8> = b"Path was invalid";
+
+public fun get_path(val: &JSONValue, store: &JSONObjectStore, path: &vector<JSONIndex>): JSONValue {
+    let mut last_val = *val;
+    let mut i = 0;
+    while (i < path.length()) {
+        let index = path[i];
+        match (val) {
+            JSONValue::Array(ref) => {
+                let data = ref.borrow_array_data(store);
+                let idx = index.as_array_idx();
+                last_val = data[idx];
+            },
+            JSONValue::Object(ref) => {
+                let data = ref.borrow_object_data(store);
+                let key = index.as_object_idx();
+                last_val = data[&key];
+            },
+            _ => abort EInvalidPath
+        };
+        i = i + 1;
+    };
+    last_val
 }
 
 
@@ -116,16 +163,16 @@ public fun unwrap_string(v: &JSONValue): String {
     }
 }
 
-public fun unwrap_array(v: &JSONValue, parsed: &ParsedJSON): vector<JSONValue> {
+public fun unwrap_array(v: &JSONValue, parsed: &mut JSONObjectStore): &mut vector<JSONValue> {
     match (v) {
-        JSONValue::Array(ref) => parsed.arrays[ref.array_idx],
+        JSONValue::Array(ref) => &mut parsed.arrays[ref.array_idx],
         _ => abort EIncorrectType
     }
 }
 
-public fun unwrap_object(v: &JSONValue, parsed: &ParsedJSON): VecMap<String, JSONValue> {
+public fun unwrap_object(v: &JSONValue, parsed: &mut JSONObjectStore): &mut VecMap<String, JSONValue> {
     match (v) {
-        JSONValue::Object(ref) => parsed.objects[ref.object_idx],
+        JSONValue::Object(ref) => &mut parsed.objects[ref.object_idx],
         _ => abort EIncorrectType
     }
 }
@@ -166,8 +213,12 @@ fun escape_string_into_bytes(s: &String): vector<u8> {
     escaped
 }
 
-fun serialize_bytes(p: &ParsedJSON, v: &JSONValue): vector<u8> {
-    match (v) {
+public fun serialize(val: &JSONValue, store: &JSONObjectStore): String {
+    string::utf8(val.serialize_bytes(store))
+}
+
+fun serialize_bytes(val: &JSONValue, store: &JSONObjectStore): vector<u8> {
+    match (val) {
         JSONValue::Null => SERIALIZED_NULL,
         JSONValue::Boolean(b) => 
             if (*b) { SERIALIZED_TRUE } else { SERIALIZED_FALSE },
@@ -190,12 +241,12 @@ fun serialize_bytes(p: &ParsedJSON, v: &JSONValue): vector<u8> {
         JSONValue::Array(ref) => {
             let mut bytes = b"[";
             
-            let arr = p.arrays[ref.array_idx];
+            let arr = store.arrays[ref.array_idx];
             let arr_len = arr.length();
 
             let mut i = 0;
             while (i < arr_len) {
-                let s = p.serialize_bytes(&arr[i]);
+                let s = arr[i].serialize_bytes(store);
                 bytes.append(s);
                 if (i + 1 < arr_len) {
                     bytes.push_back(COMMA_UTF8);
@@ -209,7 +260,7 @@ fun serialize_bytes(p: &ParsedJSON, v: &JSONValue): vector<u8> {
         JSONValue::Object(ref) => {
             let mut bytes = b"{";
 
-            let obj = p.objects[ref.object_idx];
+            let obj = store.objects[ref.object_idx];
             let keys = obj.keys();
             let keys_len = keys.length();
             let mut i = 0;
@@ -220,7 +271,7 @@ fun serialize_bytes(p: &ParsedJSON, v: &JSONValue): vector<u8> {
                 bytes.push_back(COLON_UTF8);
 
                 let val = obj[&key];
-                bytes.append(p.serialize_bytes(&val));
+                bytes.append(val.serialize_bytes(store));
 
                 if (i + 1 < keys_len) {
                     bytes.push_back(COMMA_UTF8);
@@ -237,143 +288,145 @@ fun serialize_bytes(p: &ParsedJSON, v: &JSONValue): vector<u8> {
 
 #[test]
 fun test_serialize_null() {
-    let p = new_parsed();
-    let s = p.serialize_bytes(&null());
+    let store = new_object_store();
+    let s = null().serialize_bytes(&store);
     assert!(s == b"null");
 }
 
 #[test]
 fun test_serialize_true() {
-    let p = new_parsed();
-    let s = p.serialize_bytes(&boolean(true));
+    let store = new_object_store();
+    let s = boolean(true).serialize_bytes(&store);
     assert!(s == b"true");
 }
 
 #[test]
 fun test_serialize_false() {
-    let p = new_parsed();
-    let s = p.serialize_bytes(&boolean(false));
+    let store = new_object_store();
+    let s = boolean(false).serialize_bytes(&store);
     assert!(s == b"false");
 }
 
 #[test]
 fun test_serialize_zero() {
-    let p = new_parsed();
-    let s = p.serialize_bytes(&number(0));
+    let store = new_object_store();
+    let s = number(0).serialize_bytes(&store);
     assert!(s == b"0");
 }
 
 #[test]
 fun test_serialize_num_1() {
-    let p = new_parsed();
-    let s = p.serialize_bytes(&number(123041428));
+    let store = new_object_store();
+    let s = number(123041428).serialize_bytes(&store);
     assert!(s == b"123041428");
 }
 
 #[test]
 fun test_serialize_num_2() {
-    let p = new_parsed();
-    let s = p.serialize_bytes(&number(std::u64::max_value!()));
+    let store = new_object_store();
+    let s = number(std::u64::max_value!()).serialize_bytes(&store);
     assert!(s == b"18446744073709551615");
 }
 
 #[test]
 fun test_serialize_string() {
-    let p = new_parsed();
-    let s = p.serialize_bytes(&string(string::utf8(b"Hello World")));
+    let store = new_object_store();
+    let s = string(string::utf8(b"Hello World")).serialize_bytes(&store);
 
     assert!(s == b"\"Hello World\"");
 }
 
 #[test]
 fun test_serialize_string_empty() {
-    let p = new_parsed();
-    let s = p.serialize_bytes(&string(string::utf8(b"")));
+    let store = new_object_store();
+    let s = string(string::utf8(b"")).serialize_bytes(&store);
 
     assert!(s == b"\"\"");
 }
 
 #[test]
 fun test_serialize_string_escaped_quotes() {
-    let p = new_parsed();
-    let s = p.serialize_bytes(&string(string::utf8(b"hello\"a")));
+    let store = new_object_store();
+    let s = string(string::utf8(b"hello\"a")).serialize_bytes(&store);
 
     assert!(s == b"\"hello\\\"a\"");
 }
 
 #[test]
 fun test_serialize_string_escaped_backslash() {
-    let p = new_parsed();
-    let s = p.serialize_bytes(&string(string::utf8(b"hello\\fjasj")));
+    let store = new_object_store();
+    let s = string(string::utf8(b"hello\\fjasj")).serialize_bytes(&store);
 
     assert!(s == b"\"hello\\\\fjasj\"");
 }
 
 #[test]
 fun test_serialize_empty_array() {
-    let mut p = new_parsed();
-    let arr = p.array(vector::empty());
-    let s = p.serialize_bytes(&arr);
+    let mut store = new_object_store();
+    let arr = store.array(vector::empty());
+    let s = arr.serialize_bytes(&store);
 
     assert!(s == b"[]");
 }
 
 #[test]
 fun test_serialize_singleton_array() {
-    let mut p = new_parsed();
+    let mut store = new_object_store();
     let mut v = vector::empty();
     v.push_back(boolean(true));
-    let arr = p.array(v);
-    let s = p.serialize_bytes(&arr);
+    let arr = store.array(v);
+    let s = arr.serialize_bytes(&store);
 
     assert!(s == b"[true]");
 }
 
 #[test]
 fun test_serialize_nested_array() {
-    let mut p = new_parsed();
-    let o = p.object(vec_map::empty());
+    let mut store = new_object_store();
+    let o = store.object(vec_map::empty());
 
     let mut vec = vector::empty();
     vec.push_back(o);
-    let arr = p.array(vec);
+    let arr = store.array(vec);
     
-    let s = p.serialize_bytes(&arr);
+    let s = arr.serialize_bytes(&store);
 
     assert!(s == b"[{}]");
 }
 
 #[test]
 fun test_serialize_nested_array_1() {
-    let mut p = new_parsed();
+    let mut store = new_object_store();
     let mut map = vec_map::empty();
     map.insert(string::utf8(b"hello"), string(string::utf8(b"world")));
-    let o = p.object(map);
+    let o = store.object(map);
 
     let mut vec = vector::empty();
     vec.push_back(o);
-    let arr = p.array(vec);
+    let arr = store.array(vec);
     
-    let s = p.serialize_bytes(&arr);
+    let s = arr.serialize_bytes(&store);
 
     assert!(s == b"[{\"hello\":\"world\"}]");
 }
 
 #[test]
 fun test_serialize_multiple_items_array() {
-    let mut p = new_parsed();
-    let o = p.object(vec_map::empty());
-    let a = p.array(vector::empty());
-
-    let mut vec = vector::empty();
-    vec.push_back(o);
-    vec.push_back(boolean(true));
-    vec.push_back(boolean(false));
-    vec.push_back(a);
-
-    let arr = p.array(vec);
+    // Create new object store
+    let mut store = new_object_store();
     
-    let s = p.serialize_bytes(&arr);
+    // On that store, create an empty object and array
+    let o = store.object(vec_map::empty());
+    let a = store.array(vector::empty());
 
-    assert!(s == b"[{},true,false,[]]");
+    // Create an array that contains those and some booleans
+    let vec = vector[
+        o, boolean(true), boolean(false), a
+    ];
+    let arr = store.array(vec);
+    
+    // Serialize into string
+    let s = arr.serialize(&store);
+
+    assert!(s == string::utf8(b"[{},true,false,[]]"));
 }
